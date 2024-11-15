@@ -1,3 +1,8 @@
+// To change the date range for pulling data, replace "LAST_MONTH" in the `account.getStatsFor("LAST_MONTH")` line 
+// with any supported date range constant, such as "THIS_MONTH", "LAST_7_DAYS", "LAST_30_DAYS", or a custom date range.
+// Additionally, modify the `firstDayOfMonth` and `lastDayOfMonth` variables in the `processAccount` function
+// to define a specific start and end date for your query. Supported constants and formats can be found in the Google Ads API documentation.
+
 const SHEET_URL = 'PROVIDE SHEET URL HERE'; //Create a new Google Sheet and enter it here
 const ADVERTISING_CHANNEL_TYPE = "SEARCH";
 const TIME_ZONE = "America/Los_Angeles";
