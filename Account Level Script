@@ -1,7 +1,7 @@
-const SHEET_URL = 'PROVIDE SHEET URL HERE'; //Create a new Google Sheet and enter it here
-const SHEET_NAME = 'Sheet or Client Name'; // Specify the exact name of your tab here
+const SHEET_URL = 'PROVIDE SHEET URL HERE'; // Insert your Google Sheet URL
+const SHEET_NAME = 'Sheet or Client Name'; // Name of the tab in the spreadsheet
 const ADVERTISING_CHANNEL_TYPE = "SEARCH"; 
-const TIME_ZONE = "America/Los_Angeles"; // Set your desired time zone here
+const TIME_ZONE = "America/Los_Angeles";
 
 function main() {
   const sheet = SpreadsheetApp.openByUrl(SHEET_URL).getSheetByName(SHEET_NAME);
@@ -9,138 +9,86 @@ function main() {
     Logger.log(`Sheet with name "${SHEET_NAME}" not found.`);
     return;
   }
-  Logger.log("Sheet found, starting data retrieval...");
 
-  // Get the previous month and year in "Month Year" format (e.g., "October 2024")
+  // Get the previous month and format as "Month Year"
   const lastMonthDate = new Date();
   lastMonthDate.setMonth(lastMonthDate.getMonth() - 1);
   const monthYear = Utilities.formatDate(lastMonthDate, TIME_ZONE, "MMMM yyyy");
 
-  // Clear sheet content and set headers
-  sheet.clear();
-  sheet.getRange(1, 1, 1, 9).setValues([[
-    'Month-Year', 'Campaign Name', 'Ad Group Name', 'Keyword', 'Search Term', 'Clicks', 'Spend', 'Cost/Click', 'Conversions'
-  ]]);
-  sheet.getRange(1, 1, 1, 9).setFontWeight('bold').setBackground('#4CAF50').setFontColor('white');
-  
-  const campaigns = AdsApp.campaigns()
-    .withCondition(`AdvertisingChannelType = "${ADVERTISING_CHANNEL_TYPE}"`)
-    .withCondition('Status = ENABLED')
-    .get();
-
-  const data = [];
-  Logger.log("Campaigns retrieved. Starting ad group data processing...");
-
-  let campaignCounter = 0;
-  while (campaigns.hasNext()) {
-    const campaign = campaigns.next();
-    const campaignName = campaign.getName();
-    campaignCounter++;
-    Logger.log(`Processing Campaign ${campaignCounter}: ${campaignName}`);
-
-    const adGroups = campaign.adGroups()
-      .withCondition('Status = ENABLED') // Filter for enabled ad groups
-      .get();
-    let adGroupCounter = 0;
-
-    while (adGroups.hasNext()) {
-      const adGroup = adGroups.next();
-      const adGroupName = adGroup.getName();
-      adGroupCounter++;
-      const stats = adGroup.getStatsFor('LAST_MONTH');
-      const spend = stats.getCost();
-
-      // Only process if the ad group had spend in the last month
-      if (spend > 0) {
-        Logger.log(`Processing Ad Group ${adGroupCounter} in Campaign ${campaignCounter} with spend: ${spend}`);
-
-        const keywordSet = getAdGroupKeywords(adGroup);
-        const unmatchedSearchTerms = getUnmatchedSearchTerms(adGroup, keywordSet, lastMonthDate);
-
-        unmatchedSearchTerms.forEach(term => {
-          const cost = term.spend / 1e6; // Convert micros to standard currency
-          const costPerClick = term.clicks > 0 ? cost / term.clicks : 0;
-
-          data.push([
-            monthYear, campaignName, adGroupName, term.keyword, term.searchTerm, term.clicks, cost, costPerClick, term.conversions
-          ]);
-        });
-      } else {
-        Logger.log(`Skipping Ad Group ${adGroupCounter} in Campaign ${campaignCounter}: No spend last month.`);
-      }
-    }
-  }
-
-  if (data.length > 0) {
-    Logger.log(`Data collection complete. Total rows: ${data.length}. Writing to sheet...`);
-    sheet.getRange(2, 1, data.length, data[0].length).setValues(data);
-    formatSheet(sheet, data.length);
-    Logger.log("Script execution completed. Check the output in the specified Google Sheet tab.");
-  } else {
-    Logger.log("No data available for the specified period.");
-  }
-}
-
-function getAdGroupKeywords(adGroup) {
-  const keywords = adGroup.keywords().withCondition("Status = ENABLED").get();
-  const keywordSet = new Set();
-
-  while (keywords.hasNext()) {
-    const keyword = keywords.next();
-    keyword.getText().toLowerCase().split(" ").forEach(word => keywordSet.add(word));
-  }
-  return keywordSet;
-}
-
-function getUnmatchedSearchTerms(adGroup, keywordSet, lastMonthDate) {
-  const unmatchedTerms = [];
+  // Define date range for last month
   const firstDayOfMonth = Utilities.formatDate(lastMonthDate, TIME_ZONE, "yyyy-MM-01");
   const lastDayOfMonth = Utilities.formatDate(lastMonthDate, TIME_ZONE, "yyyy-MM-") + daysInMonth(lastMonthDate);
 
-  const report = AdsApp.report(`
+  // Clear sheet and set headers
+  sheet.clear();
+  sheet.getRange(1, 1, 1, 9).setValues([
+    ['Month-Year', 'Campaign Name', 'Ad Group Name', 'Keyword', 'Search Term', 'Clicks', 'Spend', 'Cost/Click', 'Conversions']
+  ]);
+  sheet.getRange(1, 1, 1, 9).setFontWeight('bold').setBackground('#4CAF50').setFontColor('white');
+
+  // **Optimized Query to Fetch All Relevant Data at Once**
+  const query = `
     SELECT
-      search_term_view.search_term,
+      campaign.name,
+      ad_group.name,
       segments.keyword.info.text,
+      search_term_view.search_term,
       metrics.clicks,
       metrics.cost_micros,
       metrics.conversions
     FROM
       search_term_view
     WHERE
-      ad_group.id = '${adGroup.getId()}'
-      AND search_term_view.status = 'NONE'
+      metrics.cost_micros > 0
       AND segments.date BETWEEN '${firstDayOfMonth}' AND '${lastDayOfMonth}'
-  `);
+      AND campaign.advertising_channel_type = '${ADVERTISING_CHANNEL_TYPE}'
+  `;
 
+  const report = AdsApp.report(query);
   const rows = report.rows();
+  const data = [];
+
+  // **Process Data Efficiently**
   while (rows.hasNext()) {
     const row = rows.next();
+    const keywordText = row['segments.keyword.info.text'].toLowerCase().split(" ");
     const searchTerm = row['search_term_view.search_term'].toLowerCase();
-    const keyword = row['segments.keyword.info.text'];
+    
+    const cost = row['metrics.cost_micros'] / 1e6; // Convert micros to standard currency
     const clicks = row['metrics.clicks'];
-    const spend = row['metrics.cost_micros'];
-    const conversions = row['metrics.conversions'];
+    const costPerClick = clicks > 0 ? cost / clicks : 0;
 
+    // **Check if search term contains any keyword words**
     const searchTermWords = searchTerm.split(" ");
-    const hasMatchingWord = searchTermWords.some(word => keywordSet.has(word));
+    const hasMatchingWord = searchTermWords.some(word => keywordText.includes(word));
 
+    // **Log only if no words from the keyword match the search term**
     if (!hasMatchingWord) {
-      unmatchedTerms.push({
-        searchTerm: searchTerm,
-        keyword: keyword,
-        clicks: clicks,
-        spend: spend,
-        conversions: conversions
-      });
+      data.push([
+        monthYear,
+        row['campaign.name'],
+        row['ad_group.name'],
+        row['segments.keyword.info.text'],
+        row['search_term_view.search_term'],
+        clicks,
+        cost,
+        costPerClick,
+        row['metrics.conversions']
+      ]);
     }
   }
-  return unmatchedTerms;
+
+  // **Write Data to Google Sheet**
+  if (data.length > 0) {
+    sheet.getRange(2, 1, data.length, data[0].length).setValues(data);
+    formatSheet(sheet, data.length);
+    Logger.log(`Script completed: ${data.length} rows written.`);
+  } else {
+    Logger.log("No data available for the specified period.");
+  }
 }
 
-function daysInMonth(date) {
-  return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
-}
-
+// **Formats Sheet for Readability**
 function formatSheet(sheet, numRows) {
   sheet.getRange(2, 7, numRows, 1).setNumberFormat("$#,##0.00");
   sheet.getRange(2, 8, numRows, 1).setNumberFormat("$#,##0.00");
@@ -152,4 +100,9 @@ function formatSheet(sheet, numRows) {
   banding.setFirstRowColor('#f0f0f0').setSecondRowColor('#ffffff');
 
   sheet.getRange(2, 1, numRows, 9).sort({ column: 7, ascending: false });
+}
+
+// **Gets the Number of Days in a Given Month**
+function daysInMonth(date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
 }
